@@ -13,6 +13,20 @@ import "common/serial/typed_message.proto";
 
 message InboundConfig {}
 
+// HTTPQueryB64Config configures the httpqueryb64 sniffer: it recovers the
+// real target host from an HTTP request whose query string carries the
+// original URL in base64. Sniffing applies only to connections whose
+// destination matches one of `dst`.
+message HTTPQueryB64Config {
+  // Query-parameter name carrying the encoded URL. Empty means the value
+  // directly follows the '?' (the first unnamed parameter: GET /?<base64>).
+  string param = 1;
+  // Gateway addresses ("ip:port") the sniffer is enabled for.
+  repeated string dst = 2;
+  // Base64 alphabet: "auto" (default), "standard", "urlsafe".
+  string variant = 3;
+}
+
 message SniffingConfig {
   // Whether or not to enable content sniffing on an inbound connection.
   bool enabled = 1;
@@ -28,6 +42,9 @@ message SniffingConfig {
   bool metadata_only = 4;
 
   bool route_only = 5;
+
+  // Settings for the httpqueryb64 sniffer.
+  HTTPQueryB64Config http_query_b64 = 7;
 }
 
 message ReceiverConfig {

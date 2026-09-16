@@ -9,6 +9,7 @@ import (
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/protocol/bittorrent"
 	"github.com/xtls/xray-core/common/protocol/http"
+	"github.com/xtls/xray-core/common/protocol/httpqueryb64"
 	"github.com/xtls/xray-core/common/protocol/quic"
 	"github.com/xtls/xray-core/common/protocol/tls"
 )
@@ -36,6 +37,10 @@ type Sniffer struct {
 func NewSniffer(ctx context.Context) *Sniffer {
 	ret := &Sniffer{
 		sniffer: []protocolSnifferWithMetadata{
+			// httpqueryb64 runs before http: a gateway request whose query
+			// fails to decode (or a dst mismatch) returns ErrNoClue so the
+			// Host-header sniffer still gets its turn.
+			{func(c context.Context, b []byte) (SniffResult, error) { return httpqueryb64.Sniff(b, c) }, false, net.Network_TCP},
 			{func(c context.Context, b []byte) (SniffResult, error) { return http.SniffHTTP(b, c) }, false, net.Network_TCP},
 			{func(c context.Context, b []byte) (SniffResult, error) { return tls.SniffTLS(b) }, false, net.Network_TCP},
 			{func(c context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffBittorrent(b) }, false, net.Network_TCP},

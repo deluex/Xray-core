@@ -21,6 +21,9 @@ type Router struct {
 	balancers      map[string]*Balancer
 	dns            dns.Client
 
+	affinity   *AffinityTable
+	specialDst []string
+
 	ctx        context.Context
 	ohm        outbound.Manager
 	dispatcher routing.Dispatcher
@@ -42,6 +45,12 @@ func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm out
 	r.ctx = ctx
 	r.ohm = ohm
 	r.dispatcher = dispatcher
+
+	r.affinity = newAffinityTable(config.Affinity)
+	r.specialDst = nil
+	if config.Affinity != nil && config.Affinity.Enabled {
+		r.specialDst = config.Affinity.SpecialDst
+	}
 
 	r.balancers = make(map[string]*Balancer, len(config.BalancingRule))
 	for _, rule := range config.BalancingRule {

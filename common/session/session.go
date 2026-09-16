@@ -76,6 +76,20 @@ type Outbound struct {
 	CanSpliceCopy int
 }
 
+// HTTPQueryB64 carries the httpqueryb64 sniffer settings from the inbound
+// config. It mirrors xray.app.proxyman.HTTPQueryB64Config without importing
+// it (common must not depend on app packages).
+type HTTPQueryB64 struct {
+	// Param is the query-parameter name carrying the encoded URL. Empty
+	// means the value directly follows the '?' (first unnamed parameter).
+	Param string
+	// Dst lists gateway "ip:port" addresses the sniffer is enabled for.
+	Dst []string
+	// Variant selects the base64 alphabet: "auto" (default), "standard",
+	// "urlsafe".
+	Variant string
+}
+
 // SniffingRequest controls the behavior of content sniffing. They are from inbound config. Read-only
 type SniffingRequest struct {
 	ExcludeForDomain               []string
@@ -83,6 +97,8 @@ type SniffingRequest struct {
 	Enabled                        bool
 	MetadataOnly                   bool
 	RouteOnly                      bool
+	// HTTPQueryB64 carries the httpqueryb64 sniffer settings. Nil disables it.
+	HTTPQueryB64 *HTTPQueryB64
 }
 
 // Content is the metadata of the connection content. Mainly used for routing.

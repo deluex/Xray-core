@@ -57,14 +57,22 @@ func NewAlwaysOnInboundHandler(ctx context.Context, tag string, receiverConfig *
 	// This allows proxies like TUN to access these settings
 	ctx = session.ContextWithInbound(ctx, &session.Inbound{Tag: tag})
 	if receiverConfig.SniffingSettings != nil {
+		sniffingRequest := session.SniffingRequest{
+			Enabled:                        receiverConfig.SniffingSettings.Enabled,
+			OverrideDestinationForProtocol: receiverConfig.SniffingSettings.DestinationOverride,
+			ExcludeForDomain:               receiverConfig.SniffingSettings.DomainsExcluded,
+			MetadataOnly:                   receiverConfig.SniffingSettings.MetadataOnly,
+			RouteOnly:                      receiverConfig.SniffingSettings.RouteOnly,
+		}
+		if qb := receiverConfig.SniffingSettings.HttpQueryB64; qb != nil {
+			sniffingRequest.HTTPQueryB64 = &session.HTTPQueryB64{
+				Param:   qb.Param,
+				Dst:     qb.Dst,
+				Variant: qb.Variant,
+			}
+		}
 		ctx = session.ContextWithContent(ctx, &session.Content{
-			SniffingRequest: session.SniffingRequest{
-				Enabled:                        receiverConfig.SniffingSettings.Enabled,
-				OverrideDestinationForProtocol: receiverConfig.SniffingSettings.DestinationOverride,
-				ExcludeForDomain:               receiverConfig.SniffingSettings.DomainsExcluded,
-				MetadataOnly:                   receiverConfig.SniffingSettings.MetadataOnly,
-				RouteOnly:                      receiverConfig.SniffingSettings.RouteOnly,
-			},
+			SniffingRequest: sniffingRequest,
 		})
 	}
 	rawProxy, err := common.CreateObject(ctx, proxyConfig)

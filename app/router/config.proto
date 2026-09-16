@@ -150,6 +150,21 @@ message StrategyLeastLoadConfig {
   float tolerance = 6;
 }
 
+// AffinityConfig enables the domain→outbound affinity table: for
+// connections whose destination matches one of `special_dst`, the outbound
+// recorded when the domain was first routed is reused, bypassing rule
+// matching entirely. Unmatched connections fall through to normal rules.
+message AffinityConfig {
+  bool enabled = 1;
+  // Gateway addresses ("ip:port") the affinity lookup applies to.
+  repeated string special_dst = 2;
+  // Entry lifetime in seconds; refreshed on every recorded connection.
+  // 0 means 600 (10 minutes).
+  int64 ttl_seconds = 3;
+  // Maximum number of remembered domains (LRU eviction). 0 means 65536.
+  int64 max_entries = 4;
+}
+
 message Config {
   enum DomainStrategy {
     // Use domain as is.
@@ -167,4 +182,5 @@ message Config {
   DomainStrategy domain_strategy = 1;
   repeated RoutingRule rule = 2;
   repeated BalancingRule balancing_rule = 3;
+  AffinityConfig affinity = 4;
 }

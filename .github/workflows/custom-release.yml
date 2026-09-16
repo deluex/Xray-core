@@ -1,0 +1,117 @@
+name: Custom Build and Release
+
+# 魔改版构建：仅 windows-amd64 / linux-amd64 / linux-arm64。
+# 推送 v* tag 触发（如 v26.3.27-custom.1），或 Actions 页面手动触发。
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            friendly_name: windows-64
+          - goos: linux
+            goarch: amd64
+            friendly_name: linux-64
+          - goos: linux
+            goarch: arm64
+            friendly_name: linux-arm64-v8a
+      fail-fast: false
+
+    runs-on: ubuntu-latest
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: 0
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v6
+
+      - name: Show workflow information
+        run: |
+          echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: ${{ matrix.friendly_name }}"
+          echo "ASSET_NAME=${{ matrix.friendly_name }}" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Get project dependencies
+        run: go mod download
+
+      - name: Build Xray
+        run: |
+          mkdir -p build_assets
+          COMMID=$(git describe --always --dirty)
+          if [[ ${GOOS} == 'windows' ]]; then
+            echo 'Building Xray for Windows...'
+            go build -o build_assets/xray.exe -trimpath -buildvcs=false -gcflags="all=-l=4" -ldflags="-X github.com/xtls/xray-core/core.build=${COMMID} -s -w -buildid=" -v ./main
+          else
+            echo 'Building Xray...'
+            go build -o build_assets/xray -trimpath -buildvcs=false -gcflags="all=-l=4" -ldflags="-X github.com/xtls/xray-core/core.build=${COMMID} -s -w -buildid=" -v ./main
+          fi
+
+      - name: Download geodat
+        run: |
+          mkdir -p resources
+          LIST=('geoip' 'geosite')
+          for FILE_NAME in "${LIST[@]}"
+          do
+            echo "Downloading ${FILE_NAME}.dat..."
+            curl -sL --retry 5 -o "build_assets/${FILE_NAME}.dat" "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/${FILE_NAME}.dat"
+            [ -s "build_assets/${FILE_NAME}.dat" ] || { echo "Failed to download ${FILE_NAME}.dat"; exit 1; }
+          done
+
+      - name: Add Windows helpers
+        if: matrix.goos == 'windows'
+        run: |
+          echo 'CreateObject("Wscript.Shell").Run "xray.exe -config config.json",0' > build_assets/xray_no_window.vbs
+          echo 'Start-Process -FilePath ".\xray.exe" -ArgumentList "-config .\config.json" -WindowStyle Hidden' > build_assets/xray_no_window.ps1
+
+      - name: Copy README.md & LICENSE
+        run: |
+          cp ${GITHUB_WORKSPACE}/README.md ./build_assets/README.md
+          cp ${GITHUB_WORKSPACE}/LICENSE ./build_assets/LICENSE
+
+      - name: Create ZIP archive
+        shell: bash
+        run: |
+          pushd build_assets || exit 1
+          touch -mt $(date +%Y01010000) *
+          zip -9vr ../Xray-${{ env.ASSET_NAME }}.zip .
+          popd || exit 1
+          FILE=./Xray-${{ env.ASSET_NAME }}.zip
+          DGST=$FILE.dgst
+          for METHOD in {"md5","sha1","sha256","sha512"}
+          do
+            openssl dgst -$METHOD $FILE | sed 's/([^)]*)//g' >>$DGST
+          done
+
+      - name: Create release and upload binaries
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./Xray-${{ env.ASSET_NAME }}.zip
+            ./Xray-${{ env.ASSET_NAME }}.zip.dgst
+          generate_release_notes: true
+
+      - name: Upload files to Artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Xray-${{ env.ASSET_NAME }}
+          path: |
+            ./build_assets/*

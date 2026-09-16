@@ -55,12 +55,23 @@ var (
 	}, "protocol", "settings")
 )
 
+// HTTPQueryB64SniffingConfig configures the httpqueryb64 sniffer: it
+// recovers the real target host from an HTTP request whose query string
+// carries the original URL in base64. Sniffing applies only to connections
+// whose destination matches one of `dst`.
+type HTTPQueryB64SniffingConfig struct {
+	Param   string     `json:"param"`   // empty = value directly follows '?'
+	Dst     *StringList `json:"dst"`    // gateway "ip:port" list
+	Variant string     `json:"variant"` // auto (default) | standard | urlsafe
+}
+
 type SniffingConfig struct {
-	Enabled         bool        `json:"enabled"`
-	DestOverride    *StringList `json:"destOverride"`
-	DomainsExcluded *StringList `json:"domainsExcluded"`
-	MetadataOnly    bool        `json:"metadataOnly"`
-	RouteOnly       bool        `json:"routeOnly"`
+	Enabled         bool                        `json:"enabled"`
+	DestOverride    *StringList                 `json:"destOverride"`
+	DomainsExcluded *StringList                 `json:"domainsExcluded"`
+	MetadataOnly    bool                        `json:"metadataOnly"`
+	RouteOnly       bool                        `json:"routeOnly"`
+	QueryB64        *HTTPQueryB64SniffingConfig `json:"queryB64"`
 }
 
 // Build implements Buildable.
@@ -77,6 +88,8 @@ func (c *SniffingConfig) Build() (*proxyman.SniffingConfig, error) {
 				p = append(p, "quic")
 			case "fakedns", "fakedns+others":
 				p = append(p, "fakedns")
+			case "httpqueryb64":
+				p = append(p, "httpqueryb64")
 			default:
 				return nil, errors.New("unknown protocol: ", protocol)
 			}
@@ -90,12 +103,34 @@ func (c *SniffingConfig) Build() (*proxyman.SniffingConfig, error) {
 		}
 	}
 
+	var qb *proxyman.HTTPQueryB64Config
+	if c.QueryB64 != nil {
+		var dst []string
+		if c.QueryB64.Dst != nil {
+			dst = *c.QueryB64.Dst
+		}
+		if len(dst) == 0 {
+			return nil, errors.New("queryB64: dst must not be empty")
+		}
+		switch strings.ToLower(c.QueryB64.Variant) {
+		case "", "auto", "standard", "urlsafe":
+		default:
+			return nil, errors.New("queryB64: unknown variant: ", c.QueryB64.Variant)
+		}
+		qb = &proxyman.HTTPQueryB64Config{
+			Param:   c.QueryB64.Param,
+			Dst:     dst,
+			Variant: strings.ToLower(c.QueryB64.Variant),
+		}
+	}
+
 	return &proxyman.SniffingConfig{
 		Enabled:             c.Enabled,
 		DestinationOverride: p,
 		DomainsExcluded:     d,
 		MetadataOnly:        c.MetadataOnly,
 		RouteOnly:           c.RouteOnly,
+		HttpQueryB64:        qb,
 	}, nil
 }
 
