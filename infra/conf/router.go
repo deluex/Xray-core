@@ -74,10 +74,44 @@ func (r *BalancingRule) Build() (*router.BalancingRule, error) {
 	}, nil
 }
 
+// AffinityConfig configures the domain→outbound affinity table: for
+// connections to a special gateway destination (whose real target is only
+// recoverable by sniffing), the outbound recorded when the domain was first
+// routed is reused, bypassing rule matching.
+type AffinityConfig struct {
+	Enabled     bool        `json:"enabled"`
+	SpecialDst  *StringList `json:"specialDst"`
+	TtlSeconds  int64       `json:"ttlSeconds"`
+	MaxEntries  int64       `json:"maxEntries"`
+}
+
+// Build implements Buildable.
+func (c *AffinityConfig) Build() (*router.AffinityConfig, error) {
+	var dst []string
+	if c.SpecialDst != nil {
+		dst = *c.SpecialDst
+	}
+	if c.Enabled && len(dst) == 0 {
+		return nil, errors.New("affinity: specialDst must not be empty when enabled")
+	}
+	for _, d := range dst {
+		if _, err := net.ParseDestination(d); err != nil {
+			return nil, errors.New("affinity: invalid specialDst entry: ", d).Base(err)
+		}
+	}
+	return &router.AffinityConfig{
+		Enabled:     c.Enabled,
+		SpecialDst:  dst,
+		TtlSeconds:  c.TtlSeconds,
+		MaxEntries:  c.MaxEntries,
+	}, nil
+}
+
 type RouterConfig struct {
 	RuleList       []json.RawMessage `json:"rules"`
 	DomainStrategy *string           `json:"domainStrategy"`
 	Balancers      []*BalancingRule  `json:"balancers"`
+	Affinity       *AffinityConfig   `json:"affinity"`
 }
 
 func (c *RouterConfig) getDomainStrategy() router.Config_DomainStrategy {
@@ -99,6 +133,14 @@ func (c *RouterConfig) getDomainStrategy() router.Config_DomainStrategy {
 func (c *RouterConfig) Build() (*router.Config, error) {
 	config := new(router.Config)
 	config.DomainStrategy = c.getDomainStrategy()
+
+	if c.Affinity != nil {
+		affinity, err := c.Affinity.Build()
+		if err != nil {
+			return nil, err
+		}
+		config.Affinity = affinity
+	}
 
 	var rawRuleList []json.RawMessage
 	if c != nil {
