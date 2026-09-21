@@ -471,7 +471,7 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 			common.Interrupt(link.Reader)
 			return
 		}
-	} else if h := d.matchAffinity(routingLink, ob); h != nil {
+	} else if h := d.matchAffinity(ctx, ob); h != nil {
 		isPickRoute = 2
 		handler = h
 	} else if d.router != nil {
@@ -509,7 +509,7 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 
 	// Record the routing decision for the connection's domain so later
 	// sniffed gateway connections can reuse the same outbound.
-	d.recordAffinity(routingLink, ob, handler.Tag())
+	d.recordAffinity(ctx, ob, handler.Tag())
 
 	ob.Tag = handler.Tag()
 	if accessMessage := log.AccessMessageFromContext(ctx); accessMessage != nil {
@@ -534,7 +534,7 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 // gateway connection with a sniffed domain. It returns nil for ordinary
 // connections (no sniffed route target, or destination not a gateway), in
 // which case the caller falls through to normal rule matching.
-func (d *DefaultDispatcher) matchAffinity(routingLink routing.Context, ob *session.Outbound) outbound.Handler {
+func (d *DefaultDispatcher) matchAffinity(ctx context.Context, ob *session.Outbound) outbound.Handler {
 	if d.router == nil {
 		return nil
 	}
@@ -548,26 +548,27 @@ func (d *DefaultDispatcher) matchAffinity(routingLink routing.Context, ob *sessi
 		return nil
 	}
 	if !affinity.MatchSpecialDst(ob.Target) {
+		errors.LogDebug(ctx, "affinity: sniffed domain [", ob.RouteTarget.Address.Domain(), "] but dst [", ob.Target.String(), "] is not a special gateway")
 		return nil
 	}
 	domain := ob.RouteTarget.Address.Domain()
 	tag, found := affinity.LookupAffinity(domain)
 	if !found {
-		errors.LogInfo(context.Background(), "affinity: no record for sniffed domain ", domain, ", falling back to rules")
+		errors.LogInfo(ctx, "affinity: no record for sniffed domain ", domain, ", falling back to rules")
 		return nil
 	}
 	h := d.ohm.GetHandler(tag)
 	if h == nil {
-		errors.LogInfo(context.Background(), "affinity: remembered outbound [", tag, "] no longer exists")
+		errors.LogInfo(ctx, "affinity: remembered outbound [", tag, "] no longer exists")
 		return nil
 	}
-	errors.LogInfo(context.Background(), "affinity: reusing outbound [", tag, "] for sniffed domain ", domain)
+	errors.LogInfo(ctx, "affinity: reusing outbound [", tag, "] for sniffed domain ", domain)
 	return h
 }
 
 // recordAffinity remembers which outbound a domain connection was routed
 // to, keyed by the sniffed domain if present, else the target domain.
-func (d *DefaultDispatcher) recordAffinity(routingLink routing.Context, ob *session.Outbound, outboundTag string) {
+func (d *DefaultDispatcher) recordAffinity(ctx context.Context, ob *session.Outbound, outboundTag string) {
 	if d.router == nil {
 		return
 	}
@@ -585,4 +586,5 @@ func (d *DefaultDispatcher) recordAffinity(routingLink routing.Context, ob *sess
 		return
 	}
 	affinity.RecordAffinity(domain, outboundTag)
+	errors.LogDebug(ctx, "affinity: recorded ", domain, " -> ", outboundTag)
 }

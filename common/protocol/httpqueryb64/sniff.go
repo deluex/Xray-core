@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
 )
@@ -54,35 +55,42 @@ func (h *SniffHeader) Domain() string { return h.host }
 func Sniff(b []byte, c context.Context) (*SniffHeader, error) {
 	content := session.ContentFromContext(c)
 	if content == nil {
+		errors.LogDebug(c, "httpqueryb64: no content in context, skip")
 		return nil, common.ErrNoClue
 	}
 	cfg := content.SniffingRequest.HTTPQueryB64
 	if cfg == nil || len(cfg.Dst) == 0 {
+		errors.LogDebug(c, "httpqueryb64: no queryB64 config, skip")
 		return nil, common.ErrNoClue
 	}
 
 	// dst gate: the original destination must be covered by the rule.
 	outbounds := session.OutboundsFromContext(c)
 	if len(outbounds) == 0 {
+		errors.LogDebug(c, "httpqueryb64: no outbound session, skip")
 		return nil, common.ErrNoClue
 	}
 	ob := outbounds[len(outbounds)-1]
 	if !matchDst(cfg.Dst, ob.OriginalTarget, ob.Target) {
+		errors.LogDebug(c, "httpqueryb64: dst [", ob.OriginalTarget.String(), ob.Target.String(), "] not in configured list, skip")
 		return nil, common.ErrNoClue
 	}
 
 	// Request line: "GET /?<query> HTTP/1.1". The target is the second token.
 	target, ok := requestTarget(b)
 	if !ok {
+		errors.LogDebug(c, "httpqueryb64: request line has no target, skip")
 		return nil, common.ErrNoClue
 	}
 	_, query, found := strings.Cut(target, "?")
 	if !found {
+		errors.LogDebug(c, "httpqueryb64: request target has no query, skip")
 		return nil, common.ErrNoClue
 	}
 
 	value := queryValue(query, cfg.Param)
 	if value == "" || len(value) > maxEncodedLen {
+		errors.LogDebug(c, "httpqueryb64: query param [", cfg.Param, "] empty or too long, skip")
 		return nil, common.ErrNoClue
 	}
 
@@ -90,22 +98,27 @@ func Sniff(b []byte, c context.Context) (*SniffHeader, error) {
 	// '+' is NOT treated as space: in standard base64 it is a data char.
 	enc, ok := percentDecode(value)
 	if !ok {
+		errors.LogDebug(c, "httpqueryb64: percent-decode failed, skip")
 		return nil, common.ErrNoClue
 	}
 
 	dec, ok := base64Decode(enc, parseVariant(cfg.Variant))
 	if !ok {
+		errors.LogDebug(c, "httpqueryb64: base64 decode failed, skip")
 		return nil, common.ErrNoClue
 	}
 
 	url := string(dec)
 	if !utf8.ValidString(url) {
+		errors.LogDebug(c, "httpqueryb64: decoded URL is not valid UTF-8, skip")
 		return nil, common.ErrNoClue
 	}
 	host := extractURLHost(url)
 	if host == "" {
+		errors.LogDebug(c, "httpqueryb64: decoded payload [", url, "] has no usable host, skip")
 		return nil, common.ErrNoClue
 	}
+	errors.LogInfo(c, "httpqueryb64: sniffed domain [", host, "] from query")
 	return &SniffHeader{host: strings.ToLower(host)}, nil
 }
 

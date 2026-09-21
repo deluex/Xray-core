@@ -235,6 +235,13 @@ func (s *Server) handlePlainHTTP(ctx context.Context, request *http.Request, wri
 	content := &session.Content{
 		Protocol: "http/1.1",
 	}
+	// Preserve the sniffing settings from the inbound handler: this new
+	// content replaces the one set by proxyman/inbound/always.go, and
+	// without the copy the dispatcher would skip sniffing entirely for
+	// plain HTTP proxy requests.
+	if originContent := session.ContentFromContext(ctx); originContent != nil {
+		content.SniffingRequest = originContent.SniffingRequest
+	}
 
 	content.SetAttribute(":method", strings.ToUpper(request.Method))
 	content.SetAttribute(":path", request.URL.Path)
