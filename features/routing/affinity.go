@@ -15,4 +15,11 @@ type DomainAffinity interface {
 	// MatchSpecialDst reports whether dest is one of the configured
 	// affinity gateway destinations ("ip:port").
 	MatchSpecialDst(dest net.Destination) bool
+	// LookupGatewayAffinity returns the outbound last used for connections
+	// to this gateway destination, for follow-up requests that carry no
+	// sniffable hint of their own.
+	LookupGatewayAffinity(dest net.Destination) (string, bool)
+	// RecordGatewayAffinity records (or refreshes) the outbound last used
+	// for connections to this gateway destination.
+	RecordGatewayAffinity(dest net.Destination, outbound string)
 }

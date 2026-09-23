@@ -26,12 +26,52 @@ func TestAffinityPutGetRefresh(t *testing.T) {
 func TestAffinityExpiry(t *testing.T) {
 	a := newAffinityTable(&AffinityConfig{Enabled: true, TtlSeconds: 1, MaxEntries: 10})
 	a.Put("example.com", "proxy-a")
-	a.entries["example.com"].Value.(*affinityEntry).expiresAt = time.Now().Add(-time.Second)
+	a.domains.entries["example.com"].Value.(*affinityEntry).expiresAt = time.Now().Add(-time.Second)
 	if _, ok := a.Get("example.com"); ok {
 		t.Fatal("expired entry must not be returned")
 	}
-	if _, ok := a.entries["example.com"]; ok {
+	if _, ok := a.domains.entries["example.com"]; ok {
 		t.Fatal("expired entry must be removed")
+	}
+}
+
+func TestGatewayAffinityPutGet(t *testing.T) {
+	a := newAffinityTable(&AffinityConfig{Enabled: true, TtlSeconds: 60, MaxEntries: 10})
+	tcpDst := mustRouterDest("tcp:10.10.0.1:8080")
+	if _, ok := a.GetGateway(tcpDst); ok {
+		t.Fatal("empty gateway table must miss")
+	}
+	a.PutGateway(tcpDst, "proxy-a")
+	if tag, ok := a.GetGateway(tcpDst); !ok || tag != "proxy-a" {
+		t.Fatalf("GetGateway = %v, %v; want proxy-a, true", tag, ok)
+	}
+	// The key is address+port only: a network-less or udp variant of the
+	// same gateway must hit the same record.
+	if tag, ok := a.GetGateway(mustRouterDest("10.10.0.1:8080")); !ok || tag != "proxy-a" {
+		t.Fatalf("network-less lookup = %v, %v; want proxy-a, true", tag, ok)
+	}
+	// Overwrite.
+	a.PutGateway(tcpDst, "proxy-b")
+	if tag, _ := a.GetGateway(tcpDst); tag != "proxy-b" {
+		t.Fatalf("after overwrite GetGateway = %v, want proxy-b", tag)
+	}
+	// Domain and gateway stores are independent.
+	a.Put("example.com", "proxy-c")
+	if _, ok := a.GetGateway(mustRouterDest("tcp:9.9.9.9:80")); ok {
+		t.Fatal("domain record must not leak into gateway store")
+	}
+}
+
+func TestGatewayAffinityExpiry(t *testing.T) {
+	a := newAffinityTable(&AffinityConfig{Enabled: true, TtlSeconds: 1, MaxEntries: 10})
+	tcpDst := mustRouterDest("tcp:10.10.0.1:8080")
+	a.PutGateway(tcpDst, "proxy-a")
+	a.gateways.entries[gatewayKey(tcpDst)].Value.(*affinityEntry).expiresAt = time.Now().Add(-time.Second)
+	if _, ok := a.GetGateway(tcpDst); ok {
+		t.Fatal("expired gateway entry must not be returned")
+	}
+	if _, ok := a.gateways.entries[gatewayKey(tcpDst)]; ok {
+		t.Fatal("expired gateway entry must be removed")
 	}
 }
 

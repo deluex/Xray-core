@@ -2,30 +2,42 @@ package router
 
 import (
 	"container/list"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common/net"
 )
 
-// AffinityTable remembers which outbound a domain was first routed to, so
-// follow-up connections to a fixed gateway destination (whose real target is
-// only recoverable by sniffing) can be sent to the same outbound that
-// served the domain's original connection. Without the table, the gateway
-// traffic would be re-classified by rules against the gateway IP itself.
+// AffinityTable remembers which outbound traffic was routed to, on two
+// levels:
 //
-// Entries expire after ttl without refresh; the table holds at most
-// maxEntries domains (LRU eviction).
+//   - domain → outbound: which outbound served a domain's original
+//     connection, so follow-up connections to a fixed gateway destination
+//     (whose real target is only recoverable by sniffing) can be sent to
+//     the same outbound.
+//   - gateway → outbound: the outbound last used for a gateway destination.
+//     Follow-up requests to the same gateway that carry no sniffable hint
+//     of their own (no ori_url query) reuse it.
+//
+// Entries expire after ttl without refresh; each level holds at most
+// maxEntries keys (LRU eviction).
 type AffinityTable struct {
 	mu         sync.Mutex
 	ttl        time.Duration
 	maxEntries int
-	entries    map[string]*list.Element // domain → element of *affinityEntry
-	lru        list.List                // front = most recently used
+	domains    affinityStore
+	gateways   affinityStore
+}
+
+// affinityStore is one LRU+TTL keyed set of outbound tags.
+type affinityStore struct {
+	entries map[string]*list.Element // key → element of *affinityEntry
+	lru     list.List                // front = most recently used
 }
 
 type affinityEntry struct {
-	domain    string
+	key       string
 	outbound  string
 	expiresAt time.Time
 }
@@ -50,7 +62,8 @@ func newAffinityTable(cfg *AffinityConfig) *AffinityTable {
 	return &AffinityTable{
 		ttl:        ttl,
 		maxEntries: maxEntries,
-		entries:    make(map[string]*list.Element),
+		domains:    affinityStore{entries: make(map[string]*list.Element)},
+		gateways:   affinityStore{entries: make(map[string]*list.Element)},
 	}
 }
 
@@ -74,58 +87,103 @@ func (a *AffinityTable) MatchSpecialDst(specialDst []string, dest net.Destinatio
 	return false
 }
 
+// gatewayKey builds the store key for a gateway destination. Only
+// address+port matter; a bare "ip:port" config entry matches any network,
+// so the recorded key must not depend on it either.
+func gatewayKey(dest net.Destination) string {
+	return dest.Address.String() + ":" + strconv.Itoa(int(dest.Port))
+}
+
 // Get returns the remembered outbound for domain, if present and not
-// expired. A miss moves the entry to the LRU front.
+// expired. A hit moves the entry to the LRU front.
 func (a *AffinityTable) Get(domain string) (string, bool) {
-	if a == nil || domain == "" {
+	if a == nil {
 		return "", false
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	el, ok := a.entries[domain]
+	return a.domains.get(domain)
+}
+
+// Put records (or refreshes) the outbound for domain.
+func (a *AffinityTable) Put(domain, outbound string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.domains.put(domain, outbound, a.ttl, a.maxEntries)
+}
+
+// GetGateway returns the outbound last used for the gateway destination.
+// Note: IsValid() is deliberately not required — a bare "ip:port"
+// destination parses with Network_Unknown and !IsValid() but is still a
+// usable key.
+func (a *AffinityTable) GetGateway(dest net.Destination) (string, bool) {
+	if a == nil || dest.Address == nil {
+		return "", false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.gateways.get(gatewayKey(dest))
+}
+
+// PutGateway records (or refreshes) the outbound last used for the gateway
+// destination.
+func (a *AffinityTable) PutGateway(dest net.Destination, outbound string) {
+	if a == nil || dest.Address == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.gateways.put(gatewayKey(dest), outbound, a.ttl, a.maxEntries)
+}
+
+func (s *affinityStore) get(key string) (string, bool) {
+	if key == "" {
+		return "", false
+	}
+	el, ok := s.entries[key]
 	if !ok {
 		return "", false
 	}
 	entry := el.Value.(*affinityEntry)
 	if time.Now().After(entry.expiresAt) {
-		a.removeLocked(el)
+		s.removeLocked(el)
 		return "", false
 	}
-	a.lru.MoveToFront(el)
+	s.lru.MoveToFront(el)
 	return entry.outbound, true
 }
 
-// Put records (or refreshes) the outbound for domain.
-func (a *AffinityTable) Put(domain, outbound string) {
-	if a == nil || domain == "" || outbound == "" {
+func (s *affinityStore) put(key, outbound string, ttl time.Duration, maxEntries int) {
+	if key == "" || outbound == "" {
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	now := time.Now()
-	if el, ok := a.entries[domain]; ok {
+	if el, ok := s.entries[key]; ok {
 		entry := el.Value.(*affinityEntry)
 		entry.outbound = outbound
-		entry.expiresAt = now.Add(a.ttl)
-		a.lru.MoveToFront(el)
+		entry.expiresAt = now.Add(ttl)
+		s.lru.MoveToFront(el)
 		return
 	}
-	if a.lru.Len() >= a.maxEntries {
-		if oldest := a.lru.Back(); oldest != nil {
-			a.removeLocked(oldest)
+	if s.lru.Len() >= maxEntries {
+		if oldest := s.lru.Back(); oldest != nil {
+			s.removeLocked(oldest)
 		}
 	}
-	el := a.lru.PushFront(&affinityEntry{
-		domain:    domain,
+	el := s.lru.PushFront(&affinityEntry{
+		key:       key,
 		outbound:  outbound,
-		expiresAt: now.Add(a.ttl),
+		expiresAt: now.Add(ttl),
 	})
-	a.entries[domain] = el
+	s.entries[key] = el
 }
 
-func (a *AffinityTable) removeLocked(el *list.Element) {
-	entry := a.lru.Remove(el).(*affinityEntry)
-	delete(a.entries, entry.domain)
+func (s *affinityStore) removeLocked(el *list.Element) {
+	entry := s.lru.Remove(el).(*affinityEntry)
+	delete(s.entries, entry.key)
 }
 
 // Router-side accessors used by the dispatcher through the
@@ -145,4 +203,14 @@ func (r *Router) RecordAffinity(domain, outbound string) {
 // gateways. It implements routing.DomainAffinity.
 func (r *Router) MatchSpecialDst(dest net.Destination) bool {
 	return r.affinity.MatchSpecialDst(r.specialDst, dest)
+}
+
+// LookupGatewayAffinity implements routing.DomainAffinity.
+func (r *Router) LookupGatewayAffinity(dest net.Destination) (string, bool) {
+	return r.affinity.GetGateway(dest)
+}
+
+// RecordGatewayAffinity implements routing.DomainAffinity.
+func (r *Router) RecordGatewayAffinity(dest net.Destination, outbound string) {
+	r.affinity.PutGateway(dest, outbound)
 }
